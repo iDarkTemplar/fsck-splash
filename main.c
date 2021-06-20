@@ -126,12 +126,23 @@ int main(int argc, char **argv)
 		child_argv[0] = argv[1];
 		child_argv[1] = fdstring;
 
-		for (rc = 2; rc < argc; ++rc)
+		for (rc = 2, result = 2; rc < argc; )
 		{
-			child_argv[rc] = argv[rc];
+			if (strcmp(argv[rc], "-C") == 0)
+			{
+				rc += 2;
+			}
+			else if (strncmp(argv[rc], "-C", sizeof("-C") - 1) == 0)
+			{
+				++rc;
+			}
+			else
+			{
+				child_argv[result++] = argv[rc++];
+			}
 		}
 
-		child_argv[argc] = NULL;
+		child_argv[result] = NULL;
 
 		execvp(child_argv[0], child_argv);
 
