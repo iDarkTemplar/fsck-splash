@@ -66,6 +66,13 @@ void get_child_return_code(pid_t child_pid, int *result)
 	}
 }
 
+void finish_handler(void *user_data, ply_boot_client_t *client)
+{
+	state_t *state = (state_t*) user_data;
+
+	ply_event_loop_exit(state->loop, 0);
+}
+
 void display_message_success(void *user_data, ply_boot_client_t *client)
 {
 	// do nothing
@@ -81,6 +88,12 @@ void display_message_failure(void *user_data, ply_boot_client_t *client)
 void fd_has_data_handler(void *user_data, int source_fd)
 {
 	ssize_t getline_rc;
+	int rc;
+	int pass;
+	unsigned long cur;
+	unsigned long max;
+	char *device = NULL;
+	char *output_string = NULL;
 
 	state_t *state = (state_t*) user_data;
 
@@ -88,7 +101,18 @@ void fd_has_data_handler(void *user_data, int source_fd)
 
 	if (getline_rc >= 0)
 	{
-		ply_boot_client_tell_daemon_to_display_message(state->client, state->read_string, &display_message_success, display_message_failure, state);
+		if (sscanf(state->read_string, "%d %lu %lu %ms", &pass, &cur, &max, &device) == 4)
+		{
+			rc = asprintf(&output_string, "fsck: device %s, pass %d, %3.1f%% complete...", device, pass, ((double) cur) * 100.0f / ((double) max));
+			if (rc > 0)
+			{
+				ply_boot_client_tell_daemon_to_display_message(state->client, output_string, &display_message_success, &display_message_failure, state);
+			}
+
+			free(output_string);
+		}
+
+		free(device);
 	}
 }
 
@@ -98,7 +122,7 @@ void fd_closed_handler(void *user_data, int source_fd)
 
 	state->watch_closed = 1;
 
-	ply_event_loop_exit(state->loop, 0);
+	ply_boot_client_tell_daemon_to_display_message(state->client, "fsck complete", &finish_handler, &finish_handler, state);
 }
 
 void disconnect_handler(void *user_data, ply_boot_client_t *client)
@@ -295,7 +319,7 @@ child_error:
 		goto error_10;
 	}
 
-	is_connected = ply_boot_client_connect(state.client, disconnect_handler, &state);
+	is_connected = ply_boot_client_connect(state.client, &disconnect_handler, &state);
 	if (!is_connected)
 	{
 		fprintf(stderr, "ply_boot_client_connect() failed\n");
