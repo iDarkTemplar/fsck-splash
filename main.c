@@ -29,6 +29,20 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <ply-event-loop.h>
+#include <ply-boot-client.h>
+
+typedef struct
+{
+	ply_event_loop_t *loop;
+	ply_boot_client_t *client;
+	ply_fd_watch_t *fdwatch;
+	FILE *progress_file;
+	char *read_string;
+	size_t read_string_len;
+	int watch_closed;
+} state_t;
+
 void get_child_return_code(pid_t child_pid, int *result)
 {
 	int rc = 0;
@@ -52,25 +66,69 @@ void get_child_return_code(pid_t child_pid, int *result)
 	}
 }
 
+void display_message_success(void *user_data, ply_boot_client_t *client)
+{
+	// do nothing
+}
+
+void display_message_failure(void *user_data, ply_boot_client_t *client)
+{
+	state_t *state = (state_t*) user_data;
+
+	ply_event_loop_exit(state->loop, 1);
+}
+
+void fd_has_data_handler(void *user_data, int source_fd)
+{
+	ssize_t getline_rc;
+
+	state_t *state = (state_t*) user_data;
+
+	getline_rc = getline(&(state->read_string), &(state->read_string_len), state->progress_file);
+
+	if (getline_rc >= 0)
+	{
+		ply_boot_client_tell_daemon_to_display_message(state->client, state->read_string, &display_message_success, display_message_failure, state);
+	}
+}
+
+void fd_closed_handler(void *user_data, int source_fd)
+{
+	state_t *state = (state_t*) user_data;
+
+	state->watch_closed = 1;
+
+	ply_event_loop_exit(state->loop, 0);
+}
+
+void disconnect_handler(void *user_data, ply_boot_client_t *client)
+{
+	state_t *state = (state_t*) user_data;
+
+	ply_event_loop_exit(state->loop, 0);
+}
+
 int main(int argc, char **argv)
 {
 	int rc;
-	int result = -1;
+	int result = 0;
 	int progress_pipes[2] = { -1, -1 };
 	int control_pipes[2] = { -1, -1 };
+	int main_ready_pipes[2] = { -1, -1 };
 	char *fdstring = NULL;
 	char **child_argv = NULL;
 	pid_t child_pid;
 	struct pollfd poll_fd;
-	FILE *progress_file = NULL;
-	ssize_t getline_rc;
-	char *read_string = NULL;
-	size_t read_string_len = 0;
+	int exitcode = -1;
+	char parent_status = '0';
+	int should_run_failover_fsck = 1;
+	bool is_connected = false;
+	state_t state = { NULL, NULL, NULL, NULL, NULL, 0, 0 };
 
 	if (argc < 2)
 	{
 		fprintf(stderr, "USAGE: %s fsck [fsck options]\n", argv[0]);
-		goto error_1;
+		return -1;
 	}
 
 	rc = pipe(progress_pipes);
@@ -80,8 +138,8 @@ int main(int argc, char **argv)
 		goto error_1;
 	}
 
-	progress_file = fdopen(progress_pipes[0], "r");
-	if (progress_file == NULL)
+	state.progress_file = fdopen(progress_pipes[0], "r");
+	if (state.progress_file == NULL)
 	{
 		fprintf(stderr, "fdopen() failed with error %d: %s\n", errno, strerror(errno));
 		goto error_2;
@@ -94,34 +152,44 @@ int main(int argc, char **argv)
 		goto error_3;
 	}
 
+	rc = pipe(main_ready_pipes);
+	if (rc < 0)
+	{
+		fprintf(stderr, "pipe() failed with error %d: %s\n", errno, strerror(errno));
+		goto error_4;
+	}
+
 	rc = asprintf(&fdstring, "-C%d", progress_pipes[1]);
 	if (rc < 0)
 	{
 		fprintf(stderr, "asprintf() failed with error %d: %s\n", errno, strerror(errno));
-		goto error_4;
+		goto error_5;
 	}
 
 	child_argv = (char**) malloc(sizeof(char*) * (argc + 1));
 	if (child_argv == NULL)
 	{
 		fprintf(stderr, "malloc() failed with error %d: %s\n", errno, strerror(errno));
-		goto error_5;
+		goto error_6;
 	}
 
 	child_pid = fork();
 	if (child_pid == -1)
 	{
 		fprintf(stderr, "fork() failed with error %d: %s\n", errno, strerror(errno));
-		goto error_6;
+		goto error_7;
 	}
 
 	if (child_pid == 0)
 	{
-		fclose(progress_file);
-		progress_file = NULL;
+		fclose(state.progress_file);
+		state.progress_file = NULL;
 
 		close(control_pipes[0]);
 		control_pipes[0] = -1;
+
+		close(main_ready_pipes[1]);
+		main_ready_pipes[1] = -1;
 
 		child_argv[0] = argv[1];
 		child_argv[1] = fdstring;
@@ -144,10 +212,50 @@ int main(int argc, char **argv)
 
 		child_argv[result] = NULL;
 
+		poll_fd.events = POLLIN;
+		poll_fd.revents = 0;
+		poll_fd.fd = main_ready_pipes[0];
+
+		rc = poll(&poll_fd, 1, -1);
+		if (rc < 0)
+		{
+			close(main_ready_pipes[0]);
+			goto child_error;
+		}
+
+		if (rc == 0)
+		{
+			close(main_ready_pipes[0]);
+			goto child_error;
+		}
+
+		if (poll_fd.revents & POLLIN)
+		{
+			if (read(main_ready_pipes[0], &parent_status, 1) != 1)
+			{
+				close(main_ready_pipes[0]);
+				goto child_error;
+			}
+		}
+
+		close(main_ready_pipes[0]);
+
+		if (parent_status == '0')
+		{
+			goto child_error;
+		}
+
 		execvp(child_argv[0], child_argv);
 
+child_error:
 		// if execvp failed, signal error to parent
 		write(control_pipes[1], "E", 1);
+
+		free(child_argv);
+		free(fdstring);
+		close(progress_pipes[1]);
+		close(control_pipes[1]);
+
 		return -1;
 	}
 
@@ -157,11 +265,50 @@ int main(int argc, char **argv)
 	close(control_pipes[1]);
 	control_pipes[1] = -1;
 
+	close(main_ready_pipes[0]);
+	main_ready_pipes[0] = -1;
+
 	free(child_argv);
 	child_argv = NULL;
 
 	free(fdstring);
 	fdstring = NULL;
+
+	state.loop = ply_event_loop_new();
+	if (state.loop == NULL)
+	{
+		fprintf(stderr, "ply_event_loop_new() failed\n");
+		goto error_8;
+	}
+
+	state.client = ply_boot_client_new();
+	if (state.loop == NULL)
+	{
+		fprintf(stderr, "ply_event_loop_new() failed\n");
+		goto error_9;
+	}
+
+	state.fdwatch = ply_event_loop_watch_fd(state.loop, progress_pipes[0], PLY_EVENT_LOOP_FD_STATUS_HAS_DATA, &fd_has_data_handler, &fd_closed_handler, &state);
+	if (state.fdwatch == NULL)
+	{
+		fprintf(stderr, "ply_event_loop_watch_fd() failed\n");
+		goto error_10;
+	}
+
+	is_connected = ply_boot_client_connect(state.client, disconnect_handler, &state);
+	if (!is_connected)
+	{
+		fprintf(stderr, "ply_boot_client_connect() failed\n");
+		goto error_11;
+	}
+
+	ply_boot_client_attach_to_event_loop(state.client, state.loop);
+
+	// signal to child that everything is ready and it should run
+	write(main_ready_pipes[1], "1", 1);
+
+	close(main_ready_pipes[1]);
+	main_ready_pipes[1] = -1;
 
 	poll_fd.events = POLLIN;
 	poll_fd.revents = 0;
@@ -172,76 +319,79 @@ int main(int argc, char **argv)
 	{
 		fprintf(stderr, "poll() failed with error %d: %s\n", errno, strerror(errno));
 		get_child_return_code(child_pid, NULL);
-		goto error_6;
+		should_run_failover_fsck = 0;
+		goto error_12;
 	}
 
 	if (rc == 0)
 	{
 		fprintf(stderr, "poll() timed out\n");
 		get_child_return_code(child_pid, NULL);
-		goto error_6;
+		should_run_failover_fsck = 0;
+		goto error_12;
 	}
 
 	if (poll_fd.revents & POLLIN)
 	{
 		fprintf(stderr, "Failed to start fsck\n");
 		get_child_return_code(child_pid, NULL);
-		goto error_6;
+		goto error_12;
 	}
 
 	close(control_pipes[0]);
 	control_pipes[0] = -1;
 
-	poll_fd.fd = progress_pipes[0];
+	exitcode = ply_event_loop_run(state.loop);
 
-	for (;;)
+	ply_boot_client_disconnect(state.client);
+
+	if (!state.watch_closed)
 	{
-		poll_fd.revents = 0;
-
-		rc = poll(&poll_fd, 1, -1);
-
-		if (poll_fd.revents & POLLIN)
-		{
-			getline_rc = getline(&read_string, &read_string_len, progress_file);
-
-			fprintf(stdout, "Read %zu: %s", read_string_len, read_string);
-		}
-
-		if (poll_fd.revents & POLLERR)
-		{
-			fprintf(stderr, "An error occurred while polling pipe\n");
-			get_child_return_code(child_pid, &result);
-			goto error_7;
-		}
-
-		if (poll_fd.revents & POLLHUP)
-		{
-			break;
-		}
+		ply_event_loop_stop_watching_fd(state.loop, state.fdwatch);
 	}
 
-	free(read_string);
-	read_string = NULL;
+	ply_boot_client_free(state.client);
+	ply_event_loop_free(state.loop);
 
-	fclose(progress_file);
-	progress_file = NULL;
+	free(state.read_string);
+	state.read_string = NULL;
 
-	result = 0;
+	fclose(state.progress_file);
+	state.progress_file = NULL;
+
 	get_child_return_code(child_pid, &result);
 
-	return result;
+	return (result != 0) ? result : exitcode;
+
+error_12:
+	ply_boot_client_disconnect(state.client);
+
+error_11:
+	ply_event_loop_stop_watching_fd(state.loop, state.fdwatch);
+
+error_10:
+	ply_boot_client_free(state.client);
+
+error_9:
+	ply_event_loop_free(state.loop);
+
+error_8:
+	// signal to child that initialization failed
+	write(main_ready_pipes[1], "0", 1);
 
 error_7:
-	free(read_string);
-	read_string = NULL;
-
-error_6:
 	free(child_argv);
 	child_argv = NULL;
 
-error_5:
+error_6:
 	free(fdstring);
 	fdstring = NULL;
+
+error_5:
+	close(main_ready_pipes[0]);
+	main_ready_pipes[0] = -1;
+	close(main_ready_pipes[1]);
+	main_ready_pipes[1] = -1;
 
 error_4:
 	close(control_pipes[0]);
@@ -250,10 +400,10 @@ error_4:
 	control_pipes[1] = -1;
 
 error_3:
-	if (progress_file != NULL)
+	if (state.progress_file != NULL)
 	{
-		fclose(progress_file);
-		progress_file = NULL;
+		fclose(state.progress_file);
+		state.progress_file = NULL;
 		progress_pipes[0] = -1;
 	}
 
@@ -264,5 +414,12 @@ error_2:
 	progress_pipes[1] = -1;
 
 error_1:
-	return result;
+	if (should_run_failover_fsck)
+	{
+		// if everything failed, just try running plain fsck without plymouth wrapper
+		execvp(argv[1], argv + 1);
+	}
+
+	// if execvp failed or skipped, just return error. Nothing can be done anymore
+	return -1;
 }
