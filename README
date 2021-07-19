@@ -1,0 +1,7 @@
+fsck-splash is a splashscreen wrapper for fsck
+
+Currently only plymouth is supported
+
+USAGE:
+	add call to fsck-splash before fsck in init script, like following:
+		fsck-splash fsck ${fsck_args:--p} $fsck_opts "$@"
