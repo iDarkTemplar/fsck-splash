@@ -1,7 +1,7 @@
 cmake_minimum_required( VERSION 3.18.0 )
 
 project(fsck-splash
-	VERSION 0.1.0
+	VERSION 0.1.1
 	LANGUAGES C)
 
 find_package(PkgConfig REQUIRED)

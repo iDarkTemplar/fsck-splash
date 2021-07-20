@@ -32,6 +32,8 @@
 #include <ply-event-loop.h>
 #include <ply-boot-client.h>
 
+#define FSCK_ERROR 8 /* Operational error from e2fsprogs */
+
 typedef struct
 {
 	ply_event_loop_t *loop;
@@ -82,7 +84,7 @@ void display_message_failure(void *user_data, ply_boot_client_t *client)
 {
 	state_t *state = (state_t*) user_data;
 
-	ply_event_loop_exit(state->loop, 1);
+	ply_event_loop_exit(state->loop, FSCK_ERROR);
 }
 
 void fd_has_data_handler(void *user_data, int source_fd)
@@ -143,7 +145,7 @@ int main(int argc, char **argv)
 	char **child_argv = NULL;
 	pid_t child_pid;
 	struct pollfd poll_fd;
-	int exitcode = -1;
+	int exitcode = 0;
 	char parent_status = '0';
 	int should_run_failover_fsck = 1;
 	bool is_connected = false;
@@ -152,7 +154,7 @@ int main(int argc, char **argv)
 	if (argc < 2)
 	{
 		fprintf(stderr, "USAGE: %s fsck [fsck options]\n", argv[0]);
-		return -1;
+		return FSCK_ERROR;
 	}
 
 	rc = pipe(progress_pipes);
@@ -280,7 +282,7 @@ child_error:
 		close(progress_pipes[1]);
 		close(control_pipes[1]);
 
-		return -1;
+		return FSCK_ERROR;
 	}
 
 	close(progress_pipes[1]);
@@ -385,7 +387,7 @@ child_error:
 
 	get_child_return_code(child_pid, &result);
 
-	return (result != 0) ? result : exitcode;
+	return (result | exitcode);
 
 error_12:
 	ply_boot_client_disconnect(state.client);
@@ -447,5 +449,5 @@ error_1:
 	}
 
 	// if execvp failed or skipped, just return error. Nothing can be done anymore
-	return -1;
+	return FSCK_ERROR;
 }
