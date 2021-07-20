@@ -58,11 +58,11 @@ void get_child_return_code(pid_t child_pid, int *result)
 	}
 	else if (waitpid_rc == -1)
 	{
-		fprintf(stderr, "waitpid() failed with error %d: %s\n", errno, strerror(errno));
+		fprintf(stderr, "Error: waitpid() failed with error %d: %s\n", errno, strerror(errno));
 	}
 	else
 	{
-		fprintf(stderr, "waitpid() failed\n");
+		fprintf(stderr, "Error: waitpid() failed\n");
 	}
 }
 
@@ -158,49 +158,49 @@ int main(int argc, char **argv)
 	rc = pipe(progress_pipes);
 	if (rc < 0)
 	{
-		fprintf(stderr, "pipe() failed with error %d: %s\n", errno, strerror(errno));
+		fprintf(stderr, "Error: pipe() failed with error %d: %s\n", errno, strerror(errno));
 		goto error_1;
 	}
 
 	state.progress_file = fdopen(progress_pipes[0], "r");
 	if (state.progress_file == NULL)
 	{
-		fprintf(stderr, "fdopen() failed with error %d: %s\n", errno, strerror(errno));
+		fprintf(stderr, "Error: fdopen() failed with error %d: %s\n", errno, strerror(errno));
 		goto error_2;
 	}
 
 	rc = pipe2(control_pipes, O_CLOEXEC);
 	if (rc < 0)
 	{
-		fprintf(stderr, "pipe2() failed with error %d: %s\n", errno, strerror(errno));
+		fprintf(stderr, "Error: Error: pipe2() failed with error %d: %s\n", errno, strerror(errno));
 		goto error_3;
 	}
 
 	rc = pipe(main_ready_pipes);
 	if (rc < 0)
 	{
-		fprintf(stderr, "pipe() failed with error %d: %s\n", errno, strerror(errno));
+		fprintf(stderr, "Error: pipe() failed with error %d: %s\n", errno, strerror(errno));
 		goto error_4;
 	}
 
 	rc = asprintf(&fdstring, "-C%d", progress_pipes[1]);
 	if (rc < 0)
 	{
-		fprintf(stderr, "asprintf() failed with error %d: %s\n", errno, strerror(errno));
+		fprintf(stderr, "Error: asprintf() failed with error %d: %s\n", errno, strerror(errno));
 		goto error_5;
 	}
 
 	child_argv = (char**) malloc(sizeof(char*) * (argc + 1));
 	if (child_argv == NULL)
 	{
-		fprintf(stderr, "malloc() failed with error %d: %s\n", errno, strerror(errno));
+		fprintf(stderr, "Error: malloc() failed with error %d: %s\n", errno, strerror(errno));
 		goto error_6;
 	}
 
 	child_pid = fork();
 	if (child_pid == -1)
 	{
-		fprintf(stderr, "fork() failed with error %d: %s\n", errno, strerror(errno));
+		fprintf(stderr, "Error: fork() failed with error %d: %s\n", errno, strerror(errno));
 		goto error_7;
 	}
 
@@ -301,28 +301,28 @@ child_error:
 	state.loop = ply_event_loop_new();
 	if (state.loop == NULL)
 	{
-		fprintf(stderr, "ply_event_loop_new() failed\n");
+		fprintf(stderr, "Error: ply_event_loop_new() failed\n");
 		goto error_8;
 	}
 
 	state.client = ply_boot_client_new();
 	if (state.loop == NULL)
 	{
-		fprintf(stderr, "ply_event_loop_new() failed\n");
+		fprintf(stderr, "Error: ply_event_loop_new() failed\n");
 		goto error_9;
 	}
 
 	state.fdwatch = ply_event_loop_watch_fd(state.loop, progress_pipes[0], PLY_EVENT_LOOP_FD_STATUS_HAS_DATA, &fd_has_data_handler, &fd_closed_handler, &state);
 	if (state.fdwatch == NULL)
 	{
-		fprintf(stderr, "ply_event_loop_watch_fd() failed\n");
+		fprintf(stderr, "Error: ply_event_loop_watch_fd() failed\n");
 		goto error_10;
 	}
 
 	is_connected = ply_boot_client_connect(state.client, &disconnect_handler, &state);
 	if (!is_connected)
 	{
-		fprintf(stderr, "ply_boot_client_connect() failed\n");
+		fprintf(stderr, "Error: ply_boot_client_connect() failed\n");
 		goto error_11;
 	}
 
@@ -341,7 +341,7 @@ child_error:
 	rc = poll(&poll_fd, 1, -1);
 	if (rc < 0)
 	{
-		fprintf(stderr, "poll() failed with error %d: %s\n", errno, strerror(errno));
+		fprintf(stderr, "Error: poll() failed with error %d: %s\n", errno, strerror(errno));
 		get_child_return_code(child_pid, NULL);
 		should_run_failover_fsck = 0;
 		goto error_12;
@@ -349,7 +349,7 @@ child_error:
 
 	if (rc == 0)
 	{
-		fprintf(stderr, "poll() timed out\n");
+		fprintf(stderr, "Error: poll() timed out\n");
 		get_child_return_code(child_pid, NULL);
 		should_run_failover_fsck = 0;
 		goto error_12;
@@ -357,7 +357,7 @@ child_error:
 
 	if (poll_fd.revents & POLLIN)
 	{
-		fprintf(stderr, "Failed to start fsck\n");
+		fprintf(stderr, "Error: Failed to start fsck\n");
 		get_child_return_code(child_pid, NULL);
 		goto error_12;
 	}
