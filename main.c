@@ -397,6 +397,8 @@ error_10:
 	ply_boot_client_free(state.client);
 
 error_9:
+	ply_event_loop_exit(state.loop, 0);
+	ply_event_loop_run(state.loop);
 	ply_event_loop_free(state.loop);
 
 error_8:
