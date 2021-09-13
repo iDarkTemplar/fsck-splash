@@ -40,6 +40,7 @@ typedef struct
 	ply_boot_client_t *client;
 	ply_fd_watch_t *fdwatch;
 	FILE *progress_file;
+	char *last_string;
 	char *read_string;
 	size_t read_string_len;
 	int watch_closed;
@@ -108,10 +109,24 @@ void fd_has_data_handler(void *user_data, int source_fd)
 			rc = asprintf(&output_string, "fsck: device %s, pass %d, %3.1f%% complete...", device, pass, ((double) cur) * 100.0f / ((double) max));
 			if (rc > 0)
 			{
-				ply_boot_client_tell_daemon_to_display_message(state->client, output_string, &display_message_success, &display_message_failure, state);
-			}
+				if (state->last_string != NULL)
+				{
+					if (strcmp(state->last_string, output_string) != 0)
+					{
+						ply_boot_client_tell_daemon_to_hide_message(state->client, state->last_string, &display_message_success, &display_message_failure, state);
+						ply_boot_client_tell_daemon_to_display_message(state->client, output_string, &display_message_success, &display_message_failure, state);
+					}
 
-			free(output_string);
+					free(state->last_string);
+					state->last_string = output_string;
+				}
+				else
+				{
+					ply_boot_client_tell_daemon_to_display_message(state->client, output_string, &display_message_success, &display_message_failure, state);
+
+					state->last_string = output_string;
+				}
+			}
 		}
 
 		free(device);
@@ -123,6 +138,14 @@ void fd_closed_handler(void *user_data, int source_fd)
 	state_t *state = (state_t*) user_data;
 
 	state->watch_closed = 1;
+
+	if (state->last_string != NULL)
+	{
+		ply_boot_client_tell_daemon_to_hide_message(state->client, state->last_string, &display_message_success, &display_message_failure, state);
+
+		free(state->last_string);
+		state->last_string = NULL;
+	}
 
 	ply_boot_client_tell_daemon_to_display_message(state->client, "fsck complete", &finish_handler, &finish_handler, state);
 }
@@ -149,7 +172,7 @@ int main(int argc, char **argv)
 	char parent_status = '0';
 	int should_run_failover_fsck = 1;
 	bool is_connected = false;
-	state_t state = { NULL, NULL, NULL, NULL, NULL, 0, 0 };
+	state_t state = { NULL, NULL, NULL, NULL, NULL, NULL, 0, 0 };
 
 	if (argc < 2)
 	{
@@ -378,6 +401,12 @@ child_error:
 
 	ply_boot_client_free(state.client);
 	ply_event_loop_free(state.loop);
+
+	if (state.last_string != NULL)
+	{
+		free(state.last_string);
+		state.last_string = NULL;
+	}
 
 	free(state.read_string);
 	state.read_string = NULL;
